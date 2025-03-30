@@ -5,7 +5,7 @@ import { v4 as uuidv4 } from 'uuid'
 import { createClient } from 'redis'
 
 const redis = await createClient({
-  url: 'redis://default:FWchBURQJtKnxXtFUswbQqhuaczHGEcG@mainline.proxy.rlwy.net:52930'
+  url: process.env.REDIS_URL
 })
   .on('error', (err) => console.log('Redis Client Error', err))
   .connect()

@@ -45,8 +45,6 @@ router.ws('/play', async function (ws, req) {
     console.log('the player re-connected')
   }
 
-
-
   const gameKey = `game:${gameId}`
   const game = await redis.hGetAll(gameKey)
   console.log({ game })
@@ -57,7 +55,7 @@ router.ws('/play', async function (ws, req) {
     return
   }
 
-  console.log({game})
+  console.log({ game })
 
   if (game['player-1'] !== token && game['player-2'] !== token) {
     ws.close(1008, 'Forbidden')
@@ -67,19 +65,19 @@ router.ws('/play', async function (ws, req) {
   let playerId = 0
 
   if (game['player-1'] === token) {
-    console.log("Connecting player 1")
+    console.log('Connecting player 1')
     playerId = 1
   }
 
   if (game['player-2'] === token) {
     playerId = 2
-    console.log("Connecting player 2")
+    console.log('Connecting player 2')
   }
 
-  if (playerId === 0) return res.status(500).send({ error: "Unknown error" })
+  if (playerId === 0) return res.status(500).send({ error: 'Unknown error' })
 
   await redis.hSet(gameKey, {
-    [`player-${playerId}-active`]: "true"
+    [`player-${playerId}-active`]: 'true'
   })
 
   ws.playerId = playerId
@@ -93,7 +91,7 @@ router.ws('/play', async function (ws, req) {
     console.log(`Player ${ws.playerId} disconnected`)
 
     await redis.hSet(gameKey, {
-      [`player-${ws.playerId}-active`]: "false"
+      [`player-${ws.playerId}-active`]: 'false'
     })
   })
 })
@@ -109,21 +107,25 @@ router.post('/game', async function (req, res) {
 
   const gameKey = `game:${gameId}`
 
-  await redis.hSet(gameKey, { 
-    'player-1': token, 
+  await redis.hSet(gameKey, {
+    'player-1': token,
     'player-1-nickname': playerId
   })
 
   console.log('creating a game')
 
-  res.json({ token, gameId })
+  res.setHeader(
+    'Set-Cookie',
+    `playerToken=${token}; HttpOnly; Path=/; Secure; SameSite=Strict`
+  )
+
+  res.json({ playerToken: token, gameId })
 })
 
-router.post('/join', async function(req, res) {
+router.post('/join', async function (req, res) {
   const { playerId, gameId } = req.body
 
-  if (!gameId)
-    return res.status(400).send({ error: 'Game ID not provided' })
+  if (!gameId) return res.status(400).send({ error: 'Game ID not provided' })
 
   if (!playerId)
     return res.status(400).send({ error: 'Player ID not provided' })
@@ -134,21 +136,26 @@ router.post('/join', async function(req, res) {
 
   const gameError = validateGame(game)
   if (gameError) {
-    return res.status(400).send({ error: "Something went wrong" })
+    return res.status(400).send({ error: 'Something went wrong' })
   }
 
   const playerToken = uuidv4()
 
   if (game['player-2']) {
-    return res.status(400).send({ error: "Player 2 seat already taken" })
+    return res.status(400).send({ error: 'Player 2 seat already taken' })
   }
 
-  await redis.hSet(gameKey, { 
-    'player-2': playerToken, 
+  await redis.hSet(gameKey, {
+    'player-2': playerToken,
     'player-2-nickname': playerId
   })
 
-  res.json({ token: playerToken, gameId })
+  res.setHeader(
+    'Set-Cookie',
+    `playerToken=${playerToken}; HttpOnly; Path=/; Secure; SameSite=Strict`
+  )
+
+  res.json({ playerToken, gameId })
 })
 
 router.get('/', (req, res) => {

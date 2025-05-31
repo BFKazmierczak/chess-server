@@ -1,3 +1,3 @@
-import validateGame from './validateGame.mjs'
+import validateGame from "./validateGame.mjs"
 
 export { validateGame }

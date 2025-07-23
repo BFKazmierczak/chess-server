@@ -6,7 +6,7 @@ import express from "express"
 import expressWs from "express-ws"
 import { createClient } from "redis"
 import { v4 as uuidv4 } from "uuid"
-import { validateGame } from "./src/utils/index.mjs"
+import validateGame from "./src/modules/game/utils/validateGame.mjs"
 import { generatePlayerUuidCookie } from "./src/modules/auth/generatePlayerUuidCookie.mjs"
 
 configDotenv()
@@ -37,15 +37,11 @@ app.use(router)
 const socketMap = new Map()
 
 router.ws("/play", async function (ws, req) {
-  console.log("connected")
-
   const { gameId } = req.query
-  const { ["player-name"]: playerName, ["player-uuid"]: playerUuid } =
+  const { ["player-name"]: playerName, ["player-uuid"]: currentPlayerUuid } =
     req.cookies
 
-  console.log({ gameId, playerName, playerUuid })
-
-  if (!playerUuid) {
+  if (!currentPlayerUuid) {
     ws.close(1008, "Authentication token required")
     return
   }
@@ -55,13 +51,10 @@ router.ws("/play", async function (ws, req) {
     return
   }
 
-  if (socketMap.has(playerUuid)) {
-    console.log("the player re-connected")
-  }
-
   const gameKey = `game:${gameId}`
   const game = await redis.hGetAll(gameKey)
-  console.log({ game })
+
+  console.log("Found game:", game)
 
   const gameError = validateGame(game)
   if (gameError) {
@@ -69,50 +62,77 @@ router.ws("/play", async function (ws, req) {
     return
   }
 
-  console.log({ game })
-
-  if (game["player-1"] !== playerUuid && game["player-2"] !== playerUuid) {
+  if (
+    game["player-0-uuid"] !== currentPlayerUuid &&
+    game["player-1-uuid"] !== currentPlayerUuid
+  ) {
     ws.close(1008, "Forbidden")
     return
   }
 
-  let playerId = 0
-
-  if (game["player-1"] === playerUuid) {
-    console.log("Connecting player 1")
-    playerId = 1
+  /**
+   * Mapping of playerUuid -> websocket instance
+   */
+  let gameMap = socketMap.get(gameId)
+  if (!gameMap) {
+    socketMap.set(gameId, new Map())
+    gameMap = socketMap.get(gameId)
   }
 
-  if (game["player-2"] === playerUuid) {
-    playerId = 2
-    console.log("Connecting player 2")
+  if (gameMap.has(currentPlayerUuid)) {
+    console.log("player re-connected")
+  } else {
+    gameMap.set(currentPlayerUuid, ws)
+    console.log("player is connecting for the first time")
   }
 
-  if (playerId === 0) return res.status(500).send({ error: "Unknown error" })
+  let playerIndex =
+    game["player-0-uuid"] === currentPlayerUuid
+      ? 0
+      : game["player-1-uuid"] === currentPlayerUuid
+        ? 1
+        : -1
+
+  if (playerIndex === -1) {
+    return res.status(500).send({ error: "Unknown game error" })
+  }
+
+  ws.playerIndex = playerIndex
+
+  // notify other players that someone is connecting
+  for (const [playerUuid, socket] of gameMap.entries()) {
+    if (playerUuid === currentPlayerUuid) {
+      continue
+    }
+
+    const msgContent = JSON.stringify({
+      playerName: "Server",
+      message: `Player ${game[`player-${ws.playerIndex}-nickname`]} is connecting`,
+    })
+
+    socket.send(msgContent)
+  }
 
   await redis.hSet(gameKey, {
-    [`player-${playerId}-active`]: "true",
+    [`player-${playerIndex}-active`]: "true",
   })
 
-  ws.playerId = playerId
-  socketMap.set(playerUuid, ws)
-
-  const currentPlayerId = game[`player-${ws.playerId}`]
+  // propagate game status changes
 
   ws.on("message", function (msg) {
-    console.log(`Player ${ws.playerId} has sent a message:`, msg)
+    console.log(`Player ${ws.playerIndex} has sent a message:`, msg)
 
-    console.log("Socket map size:", Array.from(socketMap.values()).length)
+    console.log("Socket map size:", Array.from(gameMap.values()).length)
 
-    for (const [pId, socket] of socketMap.entries()) {
-      if (pId === currentPlayerId) {
+    for (const [playerUuid, socket] of gameMap.entries()) {
+      if (playerUuid === currentPlayerUuid) {
         continue
       }
 
       console.log("Sending to:", pId)
 
       const msgContent = JSON.stringify({
-        playerName: game[`player-${ws.playerId}-nickname`],
+        playerName: game[`player-${ws.playerIndex}-nickname`],
         message: msg,
       })
 
@@ -121,11 +141,14 @@ router.ws("/play", async function (ws, req) {
   })
 
   ws.on("close", async () => {
-    console.log(`Player ${ws.playerId} has disconnected`)
+    console.log(`Player ${ws.playerIndex} has disconnected`)
 
     await redis.hSet(gameKey, {
-      [`player-${ws.playerId}-active`]: "false",
+      status: "stopped",
+      [`player-${ws.playerIndex}-active`]: "false",
     })
+
+    // notify other players that status change
   })
 })
 
@@ -152,8 +175,8 @@ router.post("/game/create", async function (req, res) {
     id: gameId,
     createdAt: new Date().toISOString(),
     status: "awaiting",
-    "player-1": playerUuid,
-    "player-1-nickname": cookies["player-name"],
+    "player-0-uuid": playerUuid,
+    "player-0-nickname": cookies["player-name"],
   })
 
   await redis.sAdd(`games:${playerUuid}`, [gameKey])
@@ -190,17 +213,17 @@ router.post("/game/join", async function (req, res) {
     return res.status(400).send({ error: "Something went wrong" })
   }
 
-  if (game["player-1"] === playerUuid) {
+  if (game["player-0-uuid"] === playerUuid) {
     return res.status(400).send({ error: "You cannot join your own game" })
   }
 
-  if (game["player-2"]) {
+  if (game["player-1-uuid"]) {
     return res.status(400).send({ error: "Player 2 seat already taken" })
   }
 
   await redis.hSet(gameKey, {
-    "player-2": playerUuid,
-    "player-2-nickname": playerName,
+    "player-1-uuid": playerUuid,
+    "player-1-nickname": playerName,
   })
 
   await redis.sAdd(`games:${playerUuid}`, [gameKey])
@@ -226,7 +249,10 @@ router.get("/games/:gameId", async (req, res) => {
   console.log("Game:", game)
   console.log("player uuid:", playerUuid)
 
-  if (game["player-1"] !== playerUuid && game["player-2"] !== playerUuid) {
+  if (
+    game["player-0-uuid"] !== playerUuid &&
+    game["player-1-uuid"] !== playerUuid
+  ) {
     return res.status(403).send({ error: "No permission" })
   }
 
@@ -256,8 +282,8 @@ router.get("/player/me/games", async function (req, res) {
       id: game.id,
       createdAt: game.createdAt,
       status: game.status,
+      "player-0-nickname": game["player-0-nickname"],
       "player-1-nickname": game["player-1-nickname"],
-      "player-2-nickname": game["player-2-nickname"],
     })
   }
 

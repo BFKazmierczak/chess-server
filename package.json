@@ -3,7 +3,7 @@
     "start": "nodemon app.mjs"
   },
   "dependencies": {
-    "@types/express": "types/express",
+    "@types/express": "^5.0.3",
     "@types/ws": "^8.18.0",
     "body-parser": "^2.2.0",
     "cookie-parser": "^1.4.7",
@@ -15,5 +15,11 @@
     "redis": "^4.7.0",
     "uuid": "^11.1.0",
     "ws": "^8.18.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.1.0",
+    "nodemon": "^3.1.10",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.8.3"
   }
 }

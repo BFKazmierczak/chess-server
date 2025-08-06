@@ -72,7 +72,13 @@ class GameInstance {
   }
 
   public async connect(playerId: string, ...args: any[]) {
-    this.broadcastMessage("server", "Someone is connecting...")
+    this.broadcastMessage(
+      "server",
+      JSON.stringify({
+        playerName: "Server",
+        message: "Someone is connecting...",
+      }),
+    )
 
     try {
       this.connectionManager.addConnection(playerId, ...args)
@@ -115,6 +121,8 @@ class GameInstance {
       const connectionEntries = this.connectionManager.getConnectionMapEntries()
 
       for (const [_, connection] of connectionEntries) {
+        console.log("Server is sending a message to", _)
+
         this.connectionManager.broadcastMessage(connection, content)
       }
 

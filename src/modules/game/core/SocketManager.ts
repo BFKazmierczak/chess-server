@@ -20,7 +20,6 @@ class SocketManager implements IConnectionManager<WebSocket> {
     this.connectionMap.set(playerId, socket)
 
     console.log("A connection has been added")
-    console.log("Current connections:", this.getConnectionMapEntries())
 
     return true
   }
@@ -37,17 +36,12 @@ class SocketManager implements IConnectionManager<WebSocket> {
     this.connectionMap.delete(socketId)
 
     console.log("A connection has been deleted")
-    console.log("Current connections:", this.getConnectionMapEntries())
 
     return true
   }
 
   public broadcastMessage(socket: WebSocket, message: string): void {
-    const msg = JSON.stringify({
-      content: message,
-    })
-
-    socket.send(msg)
+    socket.send(message)
   }
 
   public printSocketMap() {

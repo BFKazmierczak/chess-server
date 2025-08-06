@@ -7,7 +7,8 @@ import expressWs from "express-ws"
 import { createClient } from "redis"
 import { generatePlayerUuidCookie } from "./modules/auth/generatePlayerUuidCookie.js"
 import GameManager from "./modules/game/core/GameManager.js"
-import { GameType, PlayerData } from "./modules/game/types.js"
+import { GameData, PlayerData } from "./modules/game/types.js"
+import SocketManager from "./modules/game/core/SocketManager.js"
 
 configDotenv()
 
@@ -28,133 +29,79 @@ app.use(cookieParser())
 app.use(bodyParser.json())
 app.use(router)
 
-const socketMap = new Map()
-
 const redis = await createClient({
   url: process.env.REDIS_URL,
 })
   .on("error", (err) => console.log("Redis Client Error", err))
   .connect()
-const gameManager = new GameManager(redis)
+
+const gameManager = new GameManager(redis, SocketManager)
 
 router.ws("/play", async function (ws, req) {
-  const { gameId } = req.query
-  const { ["player-name"]: playerName, ["player-uuid"]: currentPlayerUuid } =
-    req.cookies
+  const { gameId, token: currentPlayerUuid } = req.query
 
   if (!currentPlayerUuid) {
     ws.close(1008, "Authentication token required")
     return
   }
 
-  if (!gameId) {
+  if (typeof gameId !== "string") {
     ws.close(1008, "Game ID is required")
     return
   }
 
-  let game: GameType
-  try {
-    game = gameManager.getGame(gameId) as unknown as GameType
-  } catch (error) {
-    let errorMessage = "Unknown error"
+  const gameInstance = await gameManager.getGame(gameId)
 
+  if (!gameInstance) {
+    ws.close(1008, "Game not found")
+    return
+  }
+
+  let gameData: GameData
+  try {
+    gameData = await gameInstance.getData()
+  } catch (error) {
+    let errorMessage
     if (error instanceof Error) {
       errorMessage = error.message
+    } else {
+      errorMessage = "Unknown error"
     }
 
     ws.close(1008, errorMessage)
     return
   }
 
-  console.log("Found game:", game)
-
   if (
-    game["player-0-uuid"] !== currentPlayerUuid &&
-    game["player-1-uuid"] !== currentPlayerUuid
+    gameData["player-0-uuid"] !== currentPlayerUuid &&
+    gameData["player-1-uuid"] !== currentPlayerUuid
   ) {
     ws.close(1008, "Forbidden")
     return
   }
 
-  /**
-   * Mapping of playerUuid -> websocket instance
-   */
-  let gameMap = socketMap.get(gameId)
-  if (!gameMap) {
-    socketMap.set(gameId, new Map())
-    gameMap = socketMap.get(gameId)
+  try {
+    await gameInstance.connect(currentPlayerUuid, ws)
+  } catch {
+    ws.close(1013, "Connection error")
+    return
   }
-
-  if (gameMap.has(currentPlayerUuid)) {
-    console.log("player re-connected")
-  } else {
-    gameMap.set(currentPlayerUuid, ws)
-    console.log("player is connecting for the first time")
-  }
-
-  let playerIndex =
-    game["player-0-uuid"] === currentPlayerUuid
-      ? 0
-      : game["player-1-uuid"] === currentPlayerUuid
-        ? 1
-        : -1
-
-  if (playerIndex === -1) {
-    return res.status(500).send({ error: "Unknown game error" })
-  }
-
-  ws.playerIndex = playerIndex
-
-  // notify other players that someone is connecting
-  for (const [playerUuid, socket] of gameMap.entries()) {
-    if (playerUuid === currentPlayerUuid) {
-      continue
-    }
-
-    const msgContent = JSON.stringify({
-      playerName: "Server",
-      message: `Player ${game[`player-${ws.playerIndex}-nickname`]} is connecting`,
-    })
-
-    socket.send(msgContent)
-  }
-
-  await redis.hSet(gameKey, {
-    [`player-${playerIndex}-active`]: "true",
-  })
 
   // propagate game status changes
-
   ws.on("message", function (msg) {
-    console.log(`Player ${ws.playerIndex} has sent a message:`, msg)
+    const msgContent = JSON.stringify({
+      message: msg,
+    })
 
-    console.log("Socket map size:", Array.from(gameMap.values()).length)
-
-    for (const [playerUuid, socket] of gameMap.entries()) {
-      if (playerUuid === currentPlayerUuid) {
-        continue
-      }
-
-      console.log("Sending to:", pId)
-
-      const msgContent = JSON.stringify({
-        playerName: game[`player-${ws.playerIndex}-nickname`],
-        message: msg,
-      })
-
-      socket.send(msgContent)
-    }
+    gameInstance.broadcastMessage("player", currentPlayerUuid, msgContent)
   })
 
   ws.on("close", async () => {
-    console.log(`Player ${ws.playerIndex} has disconnected`)
+    console.log(`Player ${currentPlayerUuid} has disconnected`)
 
-    await redis.hSet(gameKey, {
-      status: "stopped",
-      [`player-${ws.playerIndex}-active`]: "false",
-    })
+    await gameInstance.disconnect(currentPlayerUuid)
 
-    // notify other players that status change
+    // notify other players that status changed
   })
 })
 
@@ -189,7 +136,9 @@ router.post("/game/join", async function (req, res) {
 
   const playerName = cookies["player-name"]
 
-  if (!gameId) return res.status(400).send({ error: "Game ID not provided" })
+  if (!gameId) {
+    return res.status(400).send({ error: "Game ID not provided" })
+  }
 
   if (!playerName) {
     return res.status(400).send({ error: "Player name not provided" })
@@ -198,8 +147,7 @@ router.post("/game/join", async function (req, res) {
   let playerUuid = cookies["player-uuid"]
 
   if (!playerUuid) {
-    console.info("generating new player token")
-
+    console.info("Generating new player token...")
     playerUuid = generatePlayerUuidCookie(res)
   }
 
@@ -222,7 +170,6 @@ router.post("/game/join", async function (req, res) {
 })
 
 router.get("/", (req, res) => {
-  console.log("accessing root")
   res.send("Hello World!")
 })
 
@@ -235,9 +182,14 @@ router.get("/games/:gameId", async (req, res) => {
     return res.status(403).send({ error: "No permission" })
   }
 
-  let game: GameType
+  const gameInstance = await gameManager.getGame(gameId as string)
+  if (!gameInstance) {
+    return res.status(404).send({ error: "Game not found" })
+  }
+
+  let gameData: GameData
   try {
-    game = gameManager.getGame(gameId) as unknown as GameType
+    gameData = await gameInstance.getData()
   } catch (error) {
     let errorMessage = "Unknown error"
 
@@ -249,13 +201,13 @@ router.get("/games/:gameId", async (req, res) => {
   }
 
   if (
-    game["player-0-uuid"] !== playerUuid &&
-    game["player-1-uuid"] !== playerUuid
+    gameData["player-0-uuid"] !== playerUuid &&
+    gameData["player-1-uuid"] !== playerUuid
   ) {
-    return res.status(403).send({ error: "No permission" })
+    return res.status(403).send({ error: "Forbidden" })
   }
 
-  res.json({ success: true, game })
+  res.json({ success: true, game: gameData })
 })
 
 router.get("/player/me/games", async function (req, res) {
@@ -273,7 +225,7 @@ router.get("/player/me/games", async function (req, res) {
     multi.hGetAll(gameId)
   }
 
-  const games = (await multi.execAsPipeline()) as unknown as GameType[]
+  const games = (await multi.execAsPipeline()) as unknown as GameData[]
 
   const transformedGames = []
   for (const game of games) {
@@ -290,5 +242,5 @@ router.get("/player/me/games", async function (req, res) {
 })
 
 app.listen(port, () => {
-  console.log(`Chess server listening on port ${port}`)
+  console.info(`Chess server is listening on port ${port}`)
 })

@@ -1,72 +1,76 @@
 import { v4 as uuidv4 } from "uuid"
-import { RedisClient } from "../../../types"
-import { PlayerData } from "../types"
-import validateGame from "../utils/validateGame.mjs"
-import GameInstance from "./GameInstance"
+import { RedisClient } from "../../../types.js"
+import { Constructor, PlayerData } from "../types.js"
+import GameInstance from "./GameInstance.js"
+import { IConnectionManager } from "./IConnectionManager.js"
 
 class GameManager {
   private redis: RedisClient
   private gameInstances: Map<string, GameInstance>
 
-  constructor(redisClient: RedisClient) {
+  private connectionManagerConstructor: Constructor<IConnectionManager<any>>
+
+  constructor(
+    redisClient: RedisClient,
+    connectionManagerConstructor: Constructor<IConnectionManager<any>>,
+  ) {
     this.redis = redisClient
+    this.connectionManagerConstructor = connectionManagerConstructor
+
     this.gameInstances = new Map()
   }
 
-  public async createGame(playerData: PlayerData): Promise<string> {
+  public async createGame(playerData: PlayerData): Promise<GameInstance> {
     const gameId = uuidv4()
 
-    const gameKey = `game:${gameId}`
+    const game = new GameInstance(
+      gameId,
+      this.connectionManagerConstructor,
+      this.redis,
+      playerData,
+    )
 
-    await this.redis.hSet(gameKey, {
-      id: gameId,
-      createdAt: new Date().toISOString(),
-      status: "awaiting",
-      "player-0-uuid": playerData.uuid,
-      "player-0-nickname": playerData.nickname,
-    })
+    console.log("Created game:", game)
 
-    await this.redis.sAdd(`games:${playerData.uuid}`, [gameKey])
+    this.gameInstances.set(gameId, game)
 
-    return gameId
+    return game
   }
 
   public async joinGame(gameId: string, playerData: PlayerData) {
-    const gameKey = `game:${gameId}`
+    const game = this.gameInstances.get(gameId)
 
-    const game = await this.redis.hGetAll(gameKey)
+    console.log(this.gameInstances.entries())
 
-    const gameError = validateGame(game)
-    if (gameError) {
-      throw new Error("Unable to validating the game")
+    if (!game) {
+      throw new Error("Game not found")
     }
 
-    if (game["player-0-uuid"] === playerData.uuid) {
-      throw new Error("You cannot join your own game")
-    }
-
-    if (game["player-1-uuid"]) {
-      throw new Error("Player 2 seat already taken")
-    }
-
-    await this.redis.hSet(gameKey, {
-      "player-1-uuid": playerData.uuid,
-      "player-1-nickname": playerData.nickname,
-    })
-
-    await this.redis.sAdd(`games:${playerData.uuid}`, [gameKey])
+    await game.join(playerData)
   }
 
-  public async getGame(gameId: string) {
-    const gameKey = `game:${gameId}`
-    const game = await this.redis.hGetAll(gameKey)
+  public async getGame(gameId: string): Promise<GameInstance | undefined> {
+    const inMemoryInstance = this.gameInstances.get(gameId)
 
-    const gameError = validateGame(game)
-    if (gameError) {
-      throw new Error("Game validation error: " + gameError)
+    if (inMemoryInstance) {
+      return inMemoryInstance
     }
 
-    return game
+    const existingGameData = await this.redis.hGetAll(`game:${gameId}`)
+
+    if (!GameInstance.validate(existingGameData)) {
+      return undefined
+    }
+
+    const newInstance = new GameInstance(
+      gameId,
+      this.connectionManagerConstructor,
+      this.redis,
+    )
+
+    this.gameInstances.set(gameId, newInstance)
+
+    return newInstance
   }
 }
 

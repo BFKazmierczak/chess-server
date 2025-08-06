@@ -1,6 +1,8 @@
 export type GameStatus = "awaiting" | "stopped" | "live"
 
-export type GameType = {
+export type MessageSender = "server" | "player"
+
+export type GameData = {
   id: string
   createdAt: string
   status: GameStatus
@@ -17,3 +19,5 @@ export type PlayerData = {
   nickname: string
   active?: boolean
 }
+
+export type Constructor<T> = new (...args: any[]) => T

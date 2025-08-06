@@ -10,7 +10,7 @@ class GameManager {
 
   private connectionManagerConstructor: Constructor<IConnectionManager<any>>
 
-  constructor(
+  public constructor(
     redisClient: RedisClient,
     connectionManagerConstructor: Constructor<IConnectionManager<any>>,
   ) {
@@ -20,7 +20,7 @@ class GameManager {
     this.gameInstances = new Map()
   }
 
-  public async createGame(playerData: PlayerData): Promise<GameInstance> {
+  public async createGame(playerData: PlayerData): Promise<string> {
     const gameId = uuidv4()
 
     const game = new GameInstance(
@@ -34,13 +34,11 @@ class GameManager {
 
     this.gameInstances.set(gameId, game)
 
-    return game
+    return gameId
   }
 
   public async joinGame(gameId: string, playerData: PlayerData) {
-    const game = this.gameInstances.get(gameId)
-
-    console.log(this.gameInstances.entries())
+    const game = await this.getGame(gameId)
 
     if (!game) {
       throw new Error("Game not found")
@@ -55,6 +53,8 @@ class GameManager {
     if (inMemoryInstance) {
       return inMemoryInstance
     }
+
+    console.log("Searching for game with id", gameId)
 
     const existingGameData = await this.redis.hGetAll(`game:${gameId}`)
 

@@ -4,12 +4,12 @@ import { IConnectionManager } from "./IConnectionManager.js"
 class SocketManager implements IConnectionManager<WebSocket> {
   private connectionMap: Map<string, WebSocket>
 
-  constructor() {
+  public constructor() {
     this.connectionMap = new Map()
   }
 
   public getConnectionMapEntries() {
-    return Object.entries(this.connectionMap)
+    return this.connectionMap.entries()
   }
 
   public addConnection(playerId: string, socket: WebSocket): boolean {
@@ -18,6 +18,9 @@ class SocketManager implements IConnectionManager<WebSocket> {
     }
 
     this.connectionMap.set(playerId, socket)
+
+    console.log("A connection has been added")
+    console.log("Current connections:", this.getConnectionMapEntries())
 
     return true
   }
@@ -32,6 +35,9 @@ class SocketManager implements IConnectionManager<WebSocket> {
     socket.close()
 
     this.connectionMap.delete(socketId)
+
+    console.log("A connection has been deleted")
+    console.log("Current connections:", this.getConnectionMapEntries())
 
     return true
   }

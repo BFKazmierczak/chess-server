@@ -125,12 +125,16 @@ class GameInstance {
       const playerId = a
       const content = b as string
 
+      console.log(`Player ${a} is sending a message`)
+
       const connectionEntries = this.connectionManager.getConnectionMapEntries()
 
       for (const [connectionId, connection] of connectionEntries) {
         if (playerId === connectionId) {
-          return
+          continue
         }
+
+        console.log("Sending the message to player", connectionId)
 
         this.connectionManager.broadcastMessage(connection, content)
       }

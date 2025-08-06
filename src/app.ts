@@ -38,7 +38,9 @@ const redis = await createClient({
 const gameManager = new GameManager(redis, SocketManager)
 
 router.ws("/play", async function (ws, req) {
-  const { gameId, token: currentPlayerUuid } = req.query
+  const { gameId } = req.query
+
+  const currentPlayerUuid = req.cookies["player-uuid"]
 
   if (!currentPlayerUuid) {
     ws.close(1008, "Authentication token required")
@@ -87,8 +89,12 @@ router.ws("/play", async function (ws, req) {
     return
   }
 
+  console.log(`Player ${currentPlayerUuid} has connected`)
+
   // propagate game status changes
   ws.on("message", function (msg) {
+    console.log("Received a message")
+
     const msgContent = JSON.stringify({
       message: msg,
     })

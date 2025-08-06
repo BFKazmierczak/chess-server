@@ -1,6 +1,7 @@
+import { Response } from "express"
 import { v4 as uuidv4 } from "uuid"
 
-export function generatePlayerUuidCookie(res) {
+export function generatePlayerUuidCookie(res: Response) {
   const playerUuid = uuidv4()
 
   const currentDate = new Date()

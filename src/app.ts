@@ -5,17 +5,11 @@ import { configDotenv } from "dotenv"
 import express from "express"
 import expressWs from "express-ws"
 import { createClient } from "redis"
-import { v4 as uuidv4 } from "uuid"
-import validateGame from "./src/modules/game/utils/validateGame.mjs"
-import { generatePlayerUuidCookie } from "./src/modules/auth/generatePlayerUuidCookie.mjs"
+import { generatePlayerUuidCookie } from "./modules/auth/generatePlayerUuidCookie.js"
+import GameManager from "./modules/game/core/GameManager.js"
+import { GameType, PlayerData } from "./modules/game/types.js"
 
 configDotenv()
-
-const redis = await createClient({
-  url: process.env.REDIS_URL,
-})
-  .on("error", (err) => console.log("Redis Client Error", err))
-  .connect()
 
 const app = express()
 const port = 3000
@@ -36,6 +30,13 @@ app.use(router)
 
 const socketMap = new Map()
 
+const redis = await createClient({
+  url: process.env.REDIS_URL,
+})
+  .on("error", (err) => console.log("Redis Client Error", err))
+  .connect()
+const gameManager = new GameManager(redis)
+
 router.ws("/play", async function (ws, req) {
   const { gameId } = req.query
   const { ["player-name"]: playerName, ["player-uuid"]: currentPlayerUuid } =
@@ -51,16 +52,21 @@ router.ws("/play", async function (ws, req) {
     return
   }
 
-  const gameKey = `game:${gameId}`
-  const game = await redis.hGetAll(gameKey)
+  let game: GameType
+  try {
+    game = gameManager.getGame(gameId) as unknown as GameType
+  } catch (error) {
+    let errorMessage = "Unknown error"
 
-  console.log("Found game:", game)
+    if (error instanceof Error) {
+      errorMessage = error.message
+    }
 
-  const gameError = validateGame(game)
-  if (gameError) {
-    ws.close(1008, gameError)
+    ws.close(1008, errorMessage)
     return
   }
+
+  console.log("Found game:", game)
 
   if (
     game["player-0-uuid"] !== currentPlayerUuid &&
@@ -167,19 +173,12 @@ router.post("/game/create", async function (req, res) {
     playerUuid = generatePlayerUuidCookie(res)
   }
 
-  const gameId = uuidv4()
+  const playerData: PlayerData = {
+    uuid: playerUuid,
+    nickname: cookies["player-name"],
+  }
 
-  const gameKey = `game:${gameId}`
-
-  await redis.hSet(gameKey, {
-    id: gameId,
-    createdAt: new Date().toISOString(),
-    status: "awaiting",
-    "player-0-uuid": playerUuid,
-    "player-0-nickname": cookies["player-name"],
-  })
-
-  await redis.sAdd(`games:${playerUuid}`, [gameKey])
+  const gameId = await gameManager.createGame(playerData)
 
   res.json({ gameId })
 })
@@ -204,29 +203,20 @@ router.post("/game/join", async function (req, res) {
     playerUuid = generatePlayerUuidCookie(res)
   }
 
-  const gameKey = `game:${gameId}`
-
-  const game = await redis.hGetAll(gameKey)
-
-  const gameError = validateGame(game)
-  if (gameError) {
-    return res.status(400).send({ error: "Something went wrong" })
+  const playerData: PlayerData = {
+    uuid: playerUuid,
+    nickname: playerName,
   }
 
-  if (game["player-0-uuid"] === playerUuid) {
-    return res.status(400).send({ error: "You cannot join your own game" })
+  try {
+    await gameManager.joinGame(gameId, playerData)
+  } catch (error) {
+    if (error instanceof Error) {
+      return res.status(400).send({ error: error.message })
+    }
+
+    return res.status(400).send({ error: "Unknown error" })
   }
-
-  if (game["player-1-uuid"]) {
-    return res.status(400).send({ error: "Player 2 seat already taken" })
-  }
-
-  await redis.hSet(gameKey, {
-    "player-1-uuid": playerUuid,
-    "player-1-nickname": playerName,
-  })
-
-  await redis.sAdd(`games:${playerUuid}`, [gameKey])
 
   res.json({ success: true })
 })
@@ -245,9 +235,18 @@ router.get("/games/:gameId", async (req, res) => {
     return res.status(403).send({ error: "No permission" })
   }
 
-  const game = await redis.hGetAll(`game:${gameId}`)
-  console.log("Game:", game)
-  console.log("player uuid:", playerUuid)
+  let game: GameType
+  try {
+    game = gameManager.getGame(gameId) as unknown as GameType
+  } catch (error) {
+    let errorMessage = "Unknown error"
+
+    if (error instanceof Error) {
+      errorMessage = error.message
+    }
+
+    return res.status(500).send({ error: errorMessage })
+  }
 
   if (
     game["player-0-uuid"] !== playerUuid &&
@@ -274,7 +273,7 @@ router.get("/player/me/games", async function (req, res) {
     multi.hGetAll(gameId)
   }
 
-  const games = await multi.execAsPipeline()
+  const games = (await multi.execAsPipeline()) as unknown as GameType[]
 
   const transformedGames = []
   for (const game of games) {

@@ -3,9 +3,10 @@ import { GameData } from "../types.js"
 import { Constructor } from "../types.js"
 import { IConnectionManager } from "./IConnectionManager.js"
 import { RedisClient } from "../../../types.js"
+import IDataStore from "./persistence/IDataStore.js"
 
 class GameInstance {
-  private redis: RedisClient
+  private store: IDataStore
   private connectionManager: IConnectionManager<any>
 
   private id: string
@@ -14,11 +15,11 @@ class GameInstance {
   public constructor(
     id: string,
     connectionManagerConstructor: Constructor<IConnectionManager<any>>,
-    redis: RedisClient,
+    dataStoreConstructor: Constructor<IDataStore>,
     playerData?: PlayerData,
   ) {
     this.connectionManager = new connectionManagerConstructor()
-    this.redis = redis
+    this.store = new dataStoreConstructor()
 
     this.id = id
     this.gameKey = `game:${this.id}`
@@ -29,27 +30,25 @@ class GameInstance {
   }
 
   public async initializeData(playerData: PlayerData) {
-    const gameKey = `game:${this.id}`
-
-    await this.redis.hSet(gameKey, {
-      id: this.id,
-      createdAt: new Date().toISOString(),
-      status: "awaiting",
-      "player-0-uuid": playerData.uuid,
-      "player-0-nickname": playerData.nickname,
+    await this.store.runTransaction(async (tx) => {
+      await tx.setGameData(this.id, {
+        id: this.id,
+        createdAt: new Date().toISOString(),
+        status: "awaiting",
+        "player-0-uuid": playerData.uuid,
+        "player-0-nickname": playerData.nickname,
+      })
     })
-
-    await this.redis.sAdd(`games:${playerData.uuid}`, [gameKey])
   }
 
   public async getData(): Promise<GameData> {
-    const game = await this.redis.hGetAll(this.gameKey)
+    const gameData = await this.store.getGameData(this.id)
 
-    if (!GameInstance.validate(game)) {
+    if (!GameInstance.validate(gameData)) {
       throw new Error("Game validation error")
     }
 
-    return game
+    return gameData
   }
 
   public async join(playerData: PlayerData) {

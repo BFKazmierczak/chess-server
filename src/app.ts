@@ -9,6 +9,7 @@ import { generatePlayerUuidCookie } from "./modules/auth/generatePlayerUuidCooki
 import GameManager from "./modules/game/core/GameManager.js"
 import { GameData, PlayerData } from "./modules/game/types.js"
 import SocketManager from "./modules/game/core/SocketManager.js"
+import RedisDataStore from "./modules/game/core/persistence/RedisDataStore.js"
 
 configDotenv()
 
@@ -29,13 +30,14 @@ app.use(cookieParser())
 app.use(bodyParser.json())
 app.use(router)
 
-const redis = await createClient({
-  url: process.env.REDIS_URL,
-})
-  .on("error", (err) => console.log("Redis Client Error", err))
-  .connect()
+const dbUrl = process.env.REDIS_URL
 
-const gameManager = new GameManager(redis, SocketManager)
+if (!dbUrl) {
+  throw new Error("Database URL not specified")
+}
+
+const redisStore = RedisDataStore.create(dbUrl)
+const gameManager = new GameManager(redisStore, SocketManager)
 
 router.ws("/play", async function (ws, req) {
   const { gameId } = req.query

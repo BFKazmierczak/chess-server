@@ -89,18 +89,12 @@ router.ws("/play", async function (ws, req) {
     return
   }
 
-  const connectionMessage = JSON.stringify({
-    playerName: "Server",
-    message: `Player ${currentPlayerUuid} has connected`,
-  })
-
-  gameInstance.broadcastMessage("server", connectionMessage)
-
   // propagate game status changes
   ws.on("message", function (msg) {
     console.log("Received a message")
 
     const msgContent = JSON.stringify({
+      playerName: currentPlayerUuid,
       message: msg,
     })
 
@@ -111,15 +105,6 @@ router.ws("/play", async function (ws, req) {
     console.log(`Player ${currentPlayerUuid} has disconnected`)
 
     await gameInstance.disconnect(currentPlayerUuid)
-
-    const msg = JSON.stringify({
-      playerName: "Server",
-      message: `Player ${currentPlayerUuid} has disconnected`,
-    })
-
-    console.log("Trying to send message:", msg)
-
-    gameInstance.broadcastMessage("server", msg)
   })
 })
 

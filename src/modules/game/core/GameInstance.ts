@@ -93,6 +93,18 @@ class GameInstance {
     await this.redis.hSet(this.gameKey, {
       [`player-${playerIndex}-active`]: "true",
     })
+
+    const playerName =
+      playerIndex === 0
+        ? gameData["player-0-nickname"]
+        : gameData["player-1-nickname"]
+
+    const connectionMessage = JSON.stringify({
+      playerName: "Server",
+      message: `Player ${playerName} has connected`,
+    })
+
+    this.broadcastMessage("server", connectionMessage)
   }
 
   public async disconnect(playerId: string) {
@@ -106,6 +118,20 @@ class GameInstance {
     })
 
     this.connectionManager.removeConnection(playerId)
+
+    const playerName =
+      playerIndex === 0
+        ? gameData["player-0-nickname"]
+        : gameData["player-1-nickname"]
+
+    const msg = JSON.stringify({
+      playerName: "Server",
+      message: `Player ${playerName} has disconnected`,
+    })
+
+    console.log("Trying to send message:", msg)
+
+    this.broadcastMessage("server", msg)
   }
 
   public broadcastMessage(from: "server", content: string): void

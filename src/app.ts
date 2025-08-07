@@ -4,11 +4,11 @@ import cors from "cors"
 import { configDotenv } from "dotenv"
 import express from "express"
 import expressWs from "express-ws"
-import { createClient } from "redis"
 import { generatePlayerUuidCookie } from "./modules/auth/generatePlayerUuidCookie.js"
 import GameManager from "./modules/game/core/GameManager.js"
-import { GameData, PlayerData } from "./modules/game/types.js"
 import SocketManager from "./modules/game/core/SocketManager.js"
+import RedisDataStore from "./modules/game/core/persistence/RedisDataStore.js"
+import { GameData, PlayerData } from "./modules/game/types.js"
 
 configDotenv()
 
@@ -29,13 +29,15 @@ app.use(cookieParser())
 app.use(bodyParser.json())
 app.use(router)
 
-const redis = await createClient({
-  url: process.env.REDIS_URL,
-})
-  .on("error", (err) => console.log("Redis Client Error", err))
-  .connect()
+const dbUrl = process.env.REDIS_URL
 
-const gameManager = new GameManager(redis, SocketManager)
+if (!dbUrl) {
+  throw new Error("Database URL not specified")
+}
+
+const redisStore = await RedisDataStore.create(dbUrl)
+
+const gameManager = new GameManager(redisStore, SocketManager)
 
 router.ws("/play", async function (ws, req) {
   const { gameId } = req.query
@@ -59,6 +61,14 @@ router.ws("/play", async function (ws, req) {
     return
   }
 
+  let playerData
+  try {
+    playerData = await gameInstance.getPlayerData(currentPlayerUuid)
+  } catch {
+    ws.close(1008, "Player not found")
+    return
+  }
+
   let gameData: GameData
   try {
     gameData = await gameInstance.getData()
@@ -74,10 +84,7 @@ router.ws("/play", async function (ws, req) {
     return
   }
 
-  if (
-    gameData["player-0-uuid"] !== currentPlayerUuid &&
-    gameData["player-1-uuid"] !== currentPlayerUuid
-  ) {
+  if (!gameData.players.some((player) => player.uuid === currentPlayerUuid)) {
     ws.close(1008, "Forbidden")
     return
   }
@@ -85,7 +92,7 @@ router.ws("/play", async function (ws, req) {
   try {
     await gameInstance.connect(currentPlayerUuid, ws)
   } catch {
-    ws.close(1013, "Connection error")
+    ws.close(1013, "Game instance connection error")
     return
   }
 
@@ -94,7 +101,7 @@ router.ws("/play", async function (ws, req) {
     console.log("Received a message")
 
     const msgContent = JSON.stringify({
-      playerName: currentPlayerUuid,
+      playerName: playerData.nickname,
       message: msg,
     })
 
@@ -126,6 +133,7 @@ router.post("/game/create", async function (req, res) {
   const playerData: PlayerData = {
     uuid: playerUuid,
     nickname: cookies["player-name"],
+    active: false,
   }
 
   const gameId = await gameManager.createGame(playerData)
@@ -151,22 +159,28 @@ router.post("/game/join", async function (req, res) {
 
   if (!playerUuid) {
     console.info("Generating new player token...")
+
     playerUuid = generatePlayerUuidCookie(res)
   }
 
   const playerData: PlayerData = {
     uuid: playerUuid,
     nickname: playerName,
+    active: false,
   }
 
   try {
     await gameManager.joinGame(gameId, playerData)
   } catch (error) {
     if (error instanceof Error) {
-      return res.status(400).send({ error: error.message })
+      return res
+        .status(400)
+        .send({ error: "Error encountered while joining: " + error.message })
     }
 
-    return res.status(400).send({ error: "Unknown error" })
+    return res
+      .status(400)
+      .send({ error: "Unknown error encountered while joining" })
   }
 
   res.json({ success: true })
@@ -203,10 +217,7 @@ router.get("/games/:gameId", async (req, res) => {
     return res.status(500).send({ error: errorMessage })
   }
 
-  if (
-    gameData["player-0-uuid"] !== playerUuid &&
-    gameData["player-1-uuid"] !== playerUuid
-  ) {
+  if (!gameData.players.some((player) => player.uuid === playerUuid)) {
     return res.status(403).send({ error: "Forbidden" })
   }
 

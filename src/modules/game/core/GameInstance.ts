@@ -1,24 +1,21 @@
-import { PlayerData } from "../types.js"
-import { GameData } from "../types.js"
-import { Constructor } from "../types.js"
+import { Constructor, GameData, PlayerData } from "../types.js"
 import { IConnectionManager } from "./IConnectionManager.js"
-import { RedisClient } from "../../../types.js"
+import IDataStore from "./persistence/IDataStore.js"
 
 class GameInstance {
-  private redis: RedisClient
+  private store: IDataStore
   private connectionManager: IConnectionManager<any>
 
   private id: string
-  private gameKey: string
 
   public constructor(
     id: string,
     connectionManagerConstructor: Constructor<IConnectionManager<any>>,
-    redis: RedisClient,
+    dataStore: IDataStore,
     playerData?: PlayerData,
   ) {
     this.connectionManager = new connectionManagerConstructor()
-    this.redis = redis
+    this.store = dataStore
 
     this.id = id
     this.gameKey = `game:${this.id}`
@@ -29,46 +26,48 @@ class GameInstance {
   }
 
   public async initializeData(playerData: PlayerData) {
-    const gameKey = `game:${this.id}`
-
-    await this.redis.hSet(gameKey, {
+    const data: GameData = {
       id: this.id,
       createdAt: new Date().toISOString(),
       status: "awaiting",
-      "player-0-uuid": playerData.uuid,
-      "player-0-nickname": playerData.nickname,
-    })
+      players: [],
+    }
 
-    await this.redis.sAdd(`games:${playerData.uuid}`, [gameKey])
+    const gameData = await this.store.createGameWithPlayer(
+      this.id,
+      data,
+      playerData,
+    )
+
+    console.log("Created game data:", gameData)
   }
 
   public async getData(): Promise<GameData> {
-    const game = await this.redis.hGetAll(this.gameKey)
+    const gameData = await this.store.getGameData(this.id)
 
-    if (!GameInstance.validate(game)) {
+    if (!GameInstance.validate(gameData)) {
       throw new Error("Game validation error")
     }
 
-    return game
+    return gameData
   }
 
   public async join(playerData: PlayerData) {
     const gameData = await this.getData()
 
-    if (gameData["player-0-uuid"] === playerData.uuid) {
-      throw new Error("You cannot join your own game")
+    if (gameData.players.some((player) => player.uuid === playerData.uuid)) {
+      throw new Error("Player is already registered in this game")
     }
 
-    if (gameData["player-1-uuid"]) {
-      throw new Error("Player 2 seat already taken")
+    try {
+      await this.store.addPlayerToGame(playerData, gameData.id)
+    } catch (error) {
+      if (error instanceof Error) {
+        throw new Error("Failed to add player: " + error.message)
+      }
+
+      throw new Error("Failed to add player: Unknown error")
     }
-
-    await this.redis.hSet(this.gameKey, {
-      "player-1-uuid": playerData.uuid,
-      "player-1-nickname": playerData.nickname,
-    })
-
-    await this.redis.sAdd(`games:${playerData.uuid}`, [this.gameKey])
   }
 
   public async connect(playerId: string, ...args: any[]) {
@@ -86,50 +85,29 @@ class GameInstance {
       throw new Error("Couldn't add a connection")
     }
 
-    const gameData = await this.getData()
-
-    const playerIndex = this.getPlayerIndex(playerId, gameData)
-
-    await this.redis.hSet(this.gameKey, {
-      [`player-${playerIndex}-active`]: "true",
-    })
-
-    const playerName =
-      playerIndex === 0
-        ? gameData["player-0-nickname"]
-        : gameData["player-1-nickname"]
+    const playerData = await this.store.setPlayerActive(playerId, this.id, true)
 
     const connectionMessage = JSON.stringify({
       playerName: "Server",
-      message: `Player ${playerName} has connected`,
+      message: `Player ${playerData.nickname} has connected`,
     })
 
     this.broadcastMessage("server", connectionMessage)
   }
 
   public async disconnect(playerId: string) {
-    const gameData = await this.getData()
-
-    const playerIndex = this.getPlayerIndex(playerId, gameData)
-
-    await this.redis.hSet(this.gameKey, {
-      status: "stopped",
-      [`player-${playerIndex}-active`]: "false",
-    })
+    const playerData = await this.store.setPlayerActive(
+      playerId,
+      this.id,
+      false,
+    )
 
     this.connectionManager.removeConnection(playerId)
 
-    const playerName =
-      playerIndex === 0
-        ? gameData["player-0-nickname"]
-        : gameData["player-1-nickname"]
-
     const msg = JSON.stringify({
       playerName: "Server",
-      message: `Player ${playerName} has disconnected`,
+      message: `Player ${playerData.nickname} has disconnected`,
     })
-
-    console.log("Trying to send message:", msg)
 
     this.broadcastMessage("server", msg)
   }
@@ -189,15 +167,18 @@ class GameInstance {
     return true
   }
 
-  private getPlayerIndex(playerId: string, gameData: GameData): number {
-    const playerIndex =
-      gameData["player-0-uuid"] === playerId
-        ? 0
-        : gameData["player-1-uuid"] === playerId
-          ? 1
-          : -1
+  public async getPlayerData(playerId: string) {
+    const gameData = await this.getData()
 
-    return playerIndex
+    const playerData = gameData.players.find(
+      (player) => player.uuid === playerId,
+    )
+
+    if (!playerData) {
+      throw new Error("No such player")
+    }
+
+    return playerData
   }
 }
 

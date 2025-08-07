@@ -15,15 +15,15 @@ and refining transactional operations.
 ## Goals
 The main goal of this project is to implement a scalable and modular backend server for various turn-based multiplayer
 games with decoupled architecture in mind that allows to implement game logic independent of the server internals.
-Games are implemented via an `IGameLogic` interface consumed by the `GameManager` class.
+Games are implemented via `IGameLogic` interface consumed by the `GameManager` class.
 
 ## Features
-- [*] Message broadcasting to players
-- [*] Abstract data persistence layer
+- [x] Message broadcasting to players
+- [x] Abstract data persistence layer
 - [ ] Pluggable data storages
-    - [*] Redis
+    - [x] Redis
     - [ ] SQL
-- [*] Modular connection management with injectable connection manager implementations
-- [ ] Basic player session management via cookies and UUIDs
+- [x] Modular connection management with injectable connection manager implementations
+- [x] Basic player session management via cookies and UUIDs
 - [ ] Game logic decoupled from server implementation (`IGameLogic` interface)
 - [ ] Support for plugging bot implementations for non-human players
